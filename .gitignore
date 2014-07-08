@@ -1,0 +1,14 @@
+/ebin
+/doc
+/_test
+/.eunit
+/docs
+.DS_Store
+/TEST-*.xml
+*.swp
+/deps
+/log
+/logs
+*.beam
+*.plt
+erl_crash.dump

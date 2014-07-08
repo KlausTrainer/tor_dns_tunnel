@@ -1,0 +1,12 @@
+{application, tor_dns_tunnel, [
+    {description, "Tunnel DNS queries through Tor"},
+    {vsn, "0.1.0"},
+    {modules, []},
+    {mod, {tor_dns_tunnel_app, []}},
+    {registered, []},
+    {env, []},
+    {applications, [
+        kernel,
+        stdlib
+    ]}
+]}.
