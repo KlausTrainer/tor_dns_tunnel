@@ -21,7 +21,7 @@
 -record(state, {
     listen_socket,
     dns_server_socket,
-    outstanding_requests,
+    outstanding_requests = dict:new(),
     retry_timeout = 1000
 }).
 
@@ -47,11 +47,7 @@ stop() ->
 
 init([]) ->
     {ok, ListenSocket} = gen_udp:open(5354, [binary, {ip, {127,0,0,1}}, {reuseaddr, true}]),
-    State = #state{
-        listen_socket = ListenSocket,
-        outstanding_requests = dict:new()
-    },
-    {ok, try_dns_server_connect(State)}.
+    {ok, try_dns_server_connect(#state{listen_socket = ListenSocket})}.
 
 
 handle_call(stop, _From, #state{dns_server_socket = DNSServerSocket} = State) ->
