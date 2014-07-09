@@ -44,7 +44,7 @@ connect(TargetHost, TargetPort) when is_list(TargetHost), is_integer(TargetPort)
 
 handshake(Socket) when is_port(Socket) ->
     ok = gen_tcp:send(Socket, <<?VERSION, 1, ?NO_AUTH>>),
-    case gen_tcp:recv(Socket, 0) of
+    case gen_tcp:recv(Socket, 2) of
     {ok, <<?VERSION, ?NO_AUTH>>} ->
         ok;
     {ok, <<?VERSION, ?UNACCEPTABLE>>} ->
