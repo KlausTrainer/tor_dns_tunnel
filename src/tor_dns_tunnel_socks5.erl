@@ -55,17 +55,18 @@ handshake(Socket) when is_port(Socket) ->
 
 connect(Host, Port, Socket) when is_list(Host), is_integer(Port), is_port(Socket) ->
     {AddressType, Address} = case inet:parse_address(Host) of
-    {_, _, _, _} = IPv4Address ->
-        {?ADDRESS_TYPE_IPV4, list_to_binary(IPv4Address)};
-    {_, _, _, _, _, _, _, _} = IPv6Address ->
-        {?ADDRESS_TYPE_IPV6, list_to_binary(IPv6Address)};
+    {ok, {IP1, IP2, IP3, IP4}} ->
+        {?ADDRESS_TYPE_IPV4, <<IP1,IP2,IP3,IP4>>};
+    {ok, {IP1, IP2, IP3, IP4, IP5, IP6, IP7, IP8}} ->
+        {?ADDRESS_TYPE_IPV6, <<IP1,IP2,IP3,IP4,IP5,IP6,IP7,IP8>>};
     _ ->
-        {?ADDRESS_TYPE_DOMAINNAME, list_to_binary(Host)}
+        HostBin = list_to_binary(Host),
+        HostBinLength = byte_size(HostBin),
+        {?ADDRESS_TYPE_DOMAINNAME, <<HostBinLength,HostBin/binary>>}
     end,
     ok = gen_tcp:send(Socket,
         <<?VERSION, ?CONNECT, ?RESERVED, AddressType,
-          (byte_size(Address)), Address/binary,
-          Port:16>>),
+          Address/binary, Port:16>>),
     case gen_tcp:recv(Socket, 0) of
     {ok, <<?VERSION, ?SUCCEEDED, ?RESERVED, _/binary>>} -> ok;
     {ok, <<?VERSION, Rep, ?RESERVED, _/binary>>} -> {error, reply(Rep)};
