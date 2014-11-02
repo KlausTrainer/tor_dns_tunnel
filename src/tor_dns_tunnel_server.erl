@@ -11,6 +11,8 @@
     code_change/3, terminate/2
 ]).
 
+-include_lib("kernel/src/inet_dns.hrl").
+
 -define(DNS_SERVER, "208.67.220.220").
 
 -define(MAX_RETRY_TIME, 10000).
@@ -22,7 +24,8 @@
     listen_socket,
     dns_server_socket,
     outstanding_requests = dict:new(),
-    retry_timeout = 1000
+    retry_timeout = 1000,
+    cache
 }).
 
 -record(outstanding_request, {
@@ -46,8 +49,9 @@ stop() ->
 %% gen_server callbacks
 
 init([]) ->
+    {ok, Cache} = tor_dns_tunnel_cache:start_link(),
     {ok, ListenSocket} = gen_udp:open(5354, [binary, {ip, {127,0,0,1}}, {reuseaddr, true}]),
-    {ok, try_dns_server_connect(#state{listen_socket = ListenSocket})}.
+    {ok, try_dns_server_connect(#state{listen_socket = ListenSocket, cache = Cache})}.
 
 
 handle_call(stop, _From, #state{dns_server_socket = DNSServerSocket} = State) ->
@@ -68,40 +72,16 @@ handle_cast(_Req, State) ->
     {noreply, State}.
 
 
-handle_info({udp, ListenSocket, RemoteAddress, RemotePort, <<Id:16, _/binary>> = Packet} = Request,
-            #state{listen_socket = ListenSocket} = State) when byte_size(Packet) > 2 ->
-    DNSServerSocket = State#state.dns_server_socket,
-    OutstandingRequests = State#state.outstanding_requests,
-    NewOutstandingRequests = case is_port(DNSServerSocket) of
-    true ->
-        ok = gen_tcp:send(DNSServerSocket, Packet),
-        OutstandingRequest = #outstanding_request{
-            address = RemoteAddress,
-            port = RemotePort,
-            timestamp = os:timestamp()
-        },
-        dict:store(Id, OutstandingRequest, OutstandingRequests);
-    false ->
-        case dict:find(Id, OutstandingRequests) of
-        error ->
-            erlang:send_after(?MIN_RETRY_TIMEOUT, self(), Request), % retry later
-            OutstandingRequest = #outstanding_request{
-                address = RemoteAddress,
-                port = RemotePort,
-                timestamp = os:timestamp()
-            },
-            dict:store(Id, OutstandingRequest, OutstandingRequests);
-        {ok, #outstanding_request{address = RemoteAddress, port = RemotePort, timestamp = Timestamp}} ->
-            case timer:now_diff(os:timestamp(), Timestamp) / 1000 > ?MAX_RETRY_TIME of
-            false ->
-                erlang:send_after(?MIN_RETRY_TIMEOUT, self(), Request),
-                OutstandingRequests;
-            true ->
-                dict:erase(Id, OutstandingRequests)
-            end
-        end
+handle_info({udp, ListenSocket, RemoteAddress, RemotePort, Packet} = Request,
+            #state{listen_socket = ListenSocket, cache = Cache} = State) when byte_size(Packet) > 2 ->
+    NewState = case query_cache(Cache, Packet) of
+    not_found ->
+        send_dns_request(Request, State);
+    {ok, Answer} ->
+        ok = gen_udp:send(ListenSocket, RemoteAddress, RemotePort, Answer),
+        State
     end,
-    {noreply, State#state{outstanding_requests = NewOutstandingRequests}};
+    {noreply, NewState};
 
 handle_info({tcp, DNSServerSocket, <<Id:16, _/binary>> = Packet},
             #state{dns_server_socket = DNSServerSocket} = State) when byte_size(Packet) > 2 ->
@@ -110,7 +90,8 @@ handle_info({tcp, DNSServerSocket, <<Id:16, _/binary>> = Packet},
     error ->
         ok;
     {ok, #outstanding_request{address = RemoteAddress, port = RemotePort}} ->
-        gen_udp:send(State#state.listen_socket, RemoteAddress, RemotePort, Packet)
+        cache_response(State#state.cache, Packet),
+        ok = gen_udp:send(State#state.listen_socket, RemoteAddress, RemotePort, Packet)
     end,
     {noreply, State#state{outstanding_requests = dict:erase(Id, OutstandingRequests)}};
 
@@ -157,4 +138,79 @@ try_dns_server_connect(#state{retry_timeout = RetryTimeout} = State) ->
         false ->
             State#state{dns_server_socket = undefined, retry_timeout = NewRetryTimeout}
         end
+    end.
+
+
+send_dns_request({udp, _ListenSocket, RemoteAddress, RemotePort, <<Id:16, _/binary>> = Packet} = Request, State) ->
+    DNSServerSocket = State#state.dns_server_socket,
+    OutstandingRequests = State#state.outstanding_requests,
+    NewOutstandingRequests = case is_port(DNSServerSocket) of
+    true ->
+        ok = gen_tcp:send(DNSServerSocket, Packet),
+        OutstandingRequest = #outstanding_request{
+            address = RemoteAddress,
+            port = RemotePort,
+            timestamp = os:timestamp()
+        },
+        dict:store(Id, OutstandingRequest, OutstandingRequests);
+    false ->
+        case dict:find(Id, OutstandingRequests) of
+        error ->
+            erlang:send_after(?MIN_RETRY_TIMEOUT, self(), Request), % retry later
+            OutstandingRequest = #outstanding_request{
+                address = RemoteAddress,
+                port = RemotePort,
+                timestamp = os:timestamp()
+            },
+            dict:store(Id, OutstandingRequest, OutstandingRequests);
+        {ok, #outstanding_request{address = RemoteAddress, port = RemotePort, timestamp = Timestamp}} ->
+            case timer:now_diff(os:timestamp(), Timestamp) / 1000 > ?MAX_RETRY_TIME of
+            false ->
+                erlang:send_after(?MIN_RETRY_TIMEOUT, self(), Request),
+                OutstandingRequests;
+            true ->
+                dict:erase(Id, OutstandingRequests)
+            end
+        end
+    end,
+    State#state{outstanding_requests = NewOutstandingRequests}.
+
+
+query_cache(Cache, Packet) ->
+    {ok, #dns_rec{qdlist = Questions}} = inet_dns:decode(Packet),
+    case Questions of
+    [#dns_query{type = Type, class = in} = Question] when Type =:= a; Type =:= aaaa ->
+        case tor_dns_tunnel_cache:get(Cache, Question#dns_query.domain) of
+        {ok, CachedPacket, Timestamp} ->
+            {ok, #dns_rec{header = Header, qdlist = [Question], anlist = [#dns_rr{ttl = TTL} = Answer]} = DnsRec} = inet_dns:decode(CachedPacket),
+            case TTL - (timer:now_diff(os:timestamp(), Timestamp) div 1000000) of
+            NewTTL when NewTTL >= 0 ->
+                <<Id:16, _/binary>> = Packet,
+                NewHeader = Header#dns_header{id = Id},
+                NewAnswer = Answer#dns_rr{ttl = NewTTL},
+                {ok, inet_dns:encode(DnsRec#dns_rec{header = NewHeader, anlist = [NewAnswer]})};
+            _ ->
+                not_found
+            end;
+        not_found ->
+            not_found
+        end;
+    _ ->
+        not_found
+    end.
+
+
+cache_response(Cache, Packet) ->
+    {ok, #dns_rec{qdlist = Questions, anlist = Answers}} = inet_dns:decode(Packet),
+    case Questions of
+    [#dns_query{type = Type, class = in} = Question] when Type =:= a; Type =:= aaaa ->
+        case Answers of
+        [#dns_rr{type = Type, class = in} = Answer] when Type =:= a; Type =:= aaaa ->
+            true = Question#dns_query.domain =:= Answer#dns_rr.domain,
+            tor_dns_tunnel_cache:put(Cache, Answer#dns_rr.domain, Packet, Answer#dns_rr.ttl);
+        _ ->
+            ok
+        end;
+    _ ->
+        ok
     end.
