@@ -105,7 +105,7 @@ handle_info({tcp_error, DNSServerSocket, Error}, State) ->
     gen_tcp:close(DNSServerSocket),
     {noreply, try_dns_server_connect(State)};
 
-handle_info(try_dns_server_connect, State) ->
+handle_info(retry_dns_server_connect, State) ->
     {noreply, try_dns_server_connect(State)}.
 
 
@@ -130,7 +130,7 @@ try_dns_server_connect(#state{retry_timeout = RetryTimeout} = State) ->
         State#state{dns_server_socket = DNSServerSocket, retry_timeout = ?MIN_RETRY_TIMEOUT};
     {error, Reason} ->
         error_logger:error_msg("Can't connect to DNS server ~p: ~p.~n", [?DNS_SERVER, Reason]),
-        erlang:send_after(RetryTimeout, self(), try_dns_server_connect), % retry later
+        erlang:send_after(RetryTimeout, self(), retry_dns_server_connect), % retry later
         NewRetryTimeout = RetryTimeout * 2,
         case NewRetryTimeout > ?MAX_RETRY_TIMEOUT of
         true ->
