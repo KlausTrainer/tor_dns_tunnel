@@ -2,7 +2,7 @@
 
 -behaviour(gen_server).
 
-%% API
+%% public API
 -export([start_link/0, stop/0]).
 
 %% gen_server callbacks
@@ -11,12 +11,6 @@
     code_change/3, terminate/2
 ]).
 
--include_lib("kernel/src/inet_dns.hrl").
-
--define(DNS_SERVER, "208.67.220.220").
-
--define(MAX_RETRY_TIME, 10000).
-
 -define(MIN_RETRY_TIMEOUT, 250).
 -define(MAX_RETRY_TIMEOUT, 4000).
 
@@ -24,7 +18,7 @@
     listen_socket,
     dns_server_socket,
     outstanding_requests = dict:new(),
-    retry_timeout = 1000,
+    retry_timeout = ?MIN_RETRY_TIMEOUT,
     cache
 }).
 
@@ -50,7 +44,9 @@ stop() ->
 
 init([]) ->
     {ok, Cache} = tor_dns_tunnel_cache:start_link(),
-    {ok, ListenSocket} = gen_udp:open(5354, [binary, {ip, {127,0,0,1}}, {reuseaddr, true}]),
+    {ok, ListenAddress} = inet:parse_address(tor_dns_tunnel:get_app_env(listen_address)),
+    ListenPort = tor_dns_tunnel:get_app_env(listen_port),
+    {ok, ListenSocket} = gen_udp:open(ListenPort, [binary, {ip, ListenAddress}, {reuseaddr, true}]),
     {ok, try_dns_server_connect(#state{listen_socket = ListenSocket, cache = Cache})}.
 
 
@@ -95,7 +91,6 @@ handle_info({tcp, DNSServerSocket, <<Id:16, _/binary>> = Packet},
     {noreply, State#state{outstanding_requests = dict:erase(Id, OutstandingRequests)}};
 
 handle_info({tcp_closed, DNSServerSocket}, State) ->
-    error_logger:info_msg("Socket ~p closed.~n", [DNSServerSocket]),
     gen_tcp:close(DNSServerSocket),
     {noreply, try_dns_server_connect(State)};
 
@@ -123,12 +118,13 @@ terminate(_Reason, #state{dns_server_socket = DNSServerSocket} = State) ->
 %% internal API
 
 try_dns_server_connect(#state{retry_timeout = RetryTimeout} = State) ->
-    case tor_dns_tunnel_socks5:connect(?DNS_SERVER, 53) of
+    DNSServer = dns_server(),
+    case tor_dns_tunnel_socks5:connect(DNSServer, 53) of
     {ok, DNSServerSocket} ->
         inet:setopts(DNSServerSocket, [{active, true}, {packet, 2}]),
         State#state{dns_server_socket = DNSServerSocket, retry_timeout = ?MIN_RETRY_TIMEOUT};
     {error, Reason} ->
-        error_logger:error_msg("Can't connect to DNS server ~p: ~p.~n", [?DNS_SERVER, Reason]),
+        error_logger:error_msg("Can't connect to DNS server ~p: ~p.~n", [DNSServer, Reason]),
         erlang:send_after(RetryTimeout, self(), retry_dns_server_connect), % retry later
         NewRetryTimeout = RetryTimeout * 2,
         case NewRetryTimeout > ?MAX_RETRY_TIMEOUT of
@@ -163,7 +159,7 @@ send_dns_request({udp, _ListenSocket, RemoteAddress, RemotePort, <<Id:16, _/bina
             },
             dict:store(Id, OutstandingRequest, OutstandingRequests);
         {ok, #outstanding_request{address = RemoteAddress, port = RemotePort, timestamp = Timestamp}} ->
-            case timer:now_diff(os:timestamp(), Timestamp) / 1000 > ?MAX_RETRY_TIME of
+            case timer:now_diff(os:timestamp(), Timestamp) div 1000 > ?MAX_RETRY_TIMEOUT of
             false ->
                 erlang:send_after(?MIN_RETRY_TIMEOUT, self(), Request),
                 OutstandingRequests;
@@ -175,3 +171,6 @@ send_dns_request({udp, _ListenSocket, RemoteAddress, RemotePort, <<Id:16, _/bina
     State#state{outstanding_requests = NewOutstandingRequests}.
 
 
+dns_server() ->
+    DNSServers = tor_dns_tunnel:get_app_env(dns_servers),
+    lists:nth(random:uniform(length(DNSServers)), DNSServers).

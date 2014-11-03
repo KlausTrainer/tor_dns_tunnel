@@ -1,7 +1,7 @@
 -module(tor_dns_tunnel_sup).
 -behaviour(supervisor).
 
-%% API
+%% public API
 -export([start_link/0]).
 
 %% supervisor callbacks

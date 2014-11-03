@@ -13,17 +13,18 @@
 
 -define(SUCCEEDED, 0).
 
--define(PROXY_HOST, "127.0.0.1").
--define(PROXY_PORT, 9150).
--define(PROXY_CONNECT_TIMEOUT, 10000).
 -define(PROXY_CONNECT_OPTIONS, [binary, {packet, 0}, {keepalive, true}, {nodelay, true}, {active, false}]).
 
+% public API
 -export([connect/2]).
 
 connect(TargetHost, TargetPort) when is_binary(TargetHost), is_integer(TargetPort) ->
     connect(binary_to_list(TargetHost), TargetPort);
 connect(TargetHost, TargetPort) when is_list(TargetHost), is_integer(TargetPort) ->
-    case gen_tcp:connect(?PROXY_HOST, ?PROXY_PORT, ?PROXY_CONNECT_OPTIONS, ?PROXY_CONNECT_TIMEOUT) of
+    ProxyHost = tor_dns_tunnel:get_app_env(socks_proxy_host),
+    ProxyPort = tor_dns_tunnel:get_app_env(socks_proxy_port),
+    ProxyConnectTimeout = tor_dns_tunnel:get_app_env(socks_proxy_connect_timeout),
+    case gen_tcp:connect(ProxyHost, ProxyPort, ?PROXY_CONNECT_OPTIONS, ProxyConnectTimeout) of
     {ok, Socket} ->
         case handshake(Socket) of
         ok ->
