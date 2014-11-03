@@ -50,7 +50,7 @@ put(Cache, Packet) ->
     {ok, #dns_rec{qdlist = Questions} = DNSRecord} = inet_dns:decode(Packet),
     case Questions of
     [#dns_query{class = in} = Question] ->
-        case is_valid_response(Question, DNSRecord#dns_rec.anlist) of
+        case is_cacheable_response(Question, DNSRecord#dns_rec.anlist) of
         true ->
             #dns_query{domain = Domain, type = Type} = Question,
             gen_server:cast(Cache, {put, {Domain, Type}, DNSRecord});
@@ -115,7 +115,9 @@ code_change(_OldVsn, State, _Extra) ->
 
 %% internal API
 
-is_valid_response(Question, Answers) ->
+is_cacheable_response(_Question, []) ->
+    false;
+is_cacheable_response(Question, Answers) ->
     lists:all(fun(Answer) ->
         Question#dns_query.domain =:= Answer#dns_rr.domain
             andalso Question#dns_query.type =:= Answer#dns_rr.type
