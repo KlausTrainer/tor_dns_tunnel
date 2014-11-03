@@ -85,7 +85,7 @@ handle_info({tcp, DNSServerSocket, <<Id:16, _/binary>> = Packet},
     error ->
         ok;
     {ok, #outstanding_request{address = RemoteAddress, port = RemotePort}} ->
-        ok = tor_dns_tunnel_cache:put(State#state.cache, Packet),
+        tor_dns_tunnel_cache:put(State#state.cache, Packet),
         ok = gen_udp:send(State#state.listen_socket, RemoteAddress, RemotePort, Packet)
     end,
     {noreply, State#state{outstanding_requests = dict:erase(Id, OutstandingRequests)}};
@@ -121,7 +121,7 @@ try_dns_server_connect(#state{retry_timeout = RetryTimeout} = State) ->
     DNSServer = dns_server(),
     case tor_dns_tunnel_socks5:connect(DNSServer, 53) of
     {ok, DNSServerSocket} ->
-        inet:setopts(DNSServerSocket, [{active, true}, {packet, 2}]),
+        ok = inet:setopts(DNSServerSocket, [{active, true}, {packet, 2}]),
         State#state{dns_server_socket = DNSServerSocket, retry_timeout = ?MIN_RETRY_TIMEOUT};
     {error, Reason} ->
         error_logger:error_msg("Can't connect to DNS server ~p: ~p.~n", [DNSServer, Reason]),

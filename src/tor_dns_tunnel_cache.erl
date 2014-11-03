@@ -52,7 +52,7 @@ put(Cache, Packet) ->
     [#dns_query{type = Type, class = in} = Question] when Type =:= a; Type =:= aaaa ->
         case is_cacheable_response(Question, DNSRecord#dns_rec.anlist) of
         true ->
-            ok = gen_server:cast(Cache, {put, Question#dns_query.domain, DNSRecord});
+            gen_server:cast(Cache, {put, Question#dns_query.domain, DNSRecord});
         false ->
             ok
         end;
@@ -82,7 +82,7 @@ handle_cast({put, Domain, DNSRecord}, State) ->
     _ -> ok
     end,
     NewTimer = set_timer(Domain, min_ttl(DNSRecord#dns_rec.anlist)),
-    true = ets:insert(State, {Domain, {DNSRecord, os:timestamp(), NewTimer}}),
+    ets:insert(State, {Domain, {DNSRecord, os:timestamp(), NewTimer}}),
     {noreply, State}.
 
 
@@ -105,7 +105,7 @@ handle_info({expired, Key}, State) ->
 
 
 terminate(_Reason, State) ->
-    true = ets:delete(State).
+    ets:delete(State).
 
 
 code_change(_OldVsn, State, _Extra) ->
