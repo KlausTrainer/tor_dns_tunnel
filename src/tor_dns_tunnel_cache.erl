@@ -74,7 +74,7 @@ stop(Cache) ->
 
 
 init([]) ->
-    {ok, ets:new(cache_by_items, [set, private])}.
+    {ok, ets:new(?MODULE, [set, private])}.
 
 
 handle_cast({put, Key, DNSRecord}, State) ->
