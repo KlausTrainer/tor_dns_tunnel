@@ -3,25 +3,62 @@
 
 % public API
 -export([start_link/0, stop/1]).
--export([get/2, put/4]).
+-export([get/2, put/2]).
 
 % gen_server callbacks
 -export([init/1, handle_call/3, handle_info/2, handle_cast/2]).
 -export([code_change/3, terminate/2]).
 
+-include_lib("kernel/src/inet_dns.hrl").
+
 -type cache() :: pid().
--type key() :: term().
--type item() :: term().
+
+-spec get(cache(), binary()) -> {ok, binary()} | not_found.
+get(Cache, Packet) ->
+    {ok, #dns_rec{qdlist = Questions} = DNSRecord} = inet_dns:decode(Packet),
+    case Questions of
+    [#dns_query{type = Type, class = in} = Question] when Type =:= a; Type =:= aaaa ->
+        case gen_server:call(Cache, {get, Question#dns_query.domain}, infinity) of
+        {ok, CachedDNSRecord, Timestamp} ->
+            Answers = CachedDNSRecord#dns_rec.anlist,
+            ElapsedTimeInSeconds = timer:now_diff(os:timestamp(), Timestamp) div 1000000,
+
+            StillValid = lists:all(fun(CachedAnswer) ->
+                CachedAnswer#dns_rr.ttl - ElapsedTimeInSeconds >= 0
+            end, Answers),
+
+            case StillValid of
+            true ->
+                NewAnswers = lists:map(fun(CachedAnswer) ->
+                    CachedAnswer#dns_rr{ttl = CachedAnswer#dns_rr.ttl - ElapsedTimeInSeconds}
+                end, Answers),
+                NewHeader = CachedDNSRecord#dns_rec.header#dns_header{id = DNSRecord#dns_rec.header#dns_header.id},
+                {ok, inet_dns:encode(CachedDNSRecord#dns_rec{header = NewHeader, anlist = NewAnswers})};
+            false ->
+                not_found
+            end;
+        not_found ->
+            not_found
+        end;
+    _ ->
+        not_found
+    end.
 
 
--spec get(cache(), key()) -> {ok, item()} | not_found.
-get(Cache, Key) ->
-    gen_server:call(Cache, {get, Key}, infinity).
-
-
--spec put(cache(), key(), item(), non_neg_integer()) -> ok.
-put(Cache, Key, Item, TTL) ->
-    ok = gen_server:cast(Cache, {put, Key, Item, TTL}).
+-spec put(cache(), binary()) -> ok.
+put(Cache, Packet) ->
+    {ok, #dns_rec{qdlist = Questions} = DNSRecord} = inet_dns:decode(Packet),
+    case Questions of
+    [#dns_query{type = Type, class = in} = Question] when Type =:= a; Type =:= aaaa ->
+        case is_cacheable_response(Question, DNSRecord#dns_rec.anlist) of
+        true ->
+            ok = gen_server:cast(Cache, {put, Question#dns_query.domain, DNSRecord});
+        false ->
+            ok
+        end;
+    _ ->
+        ok
+    end.
 
 
 -spec start_link() -> {ok, cache()}.
@@ -39,12 +76,13 @@ init([]) ->
     {ok, ets:new(cache_by_items, [set, private])}.
 
 
-handle_cast({put, Key, Item, TTL}, State) ->
-    case ets:lookup(State, Key) of
-    [{Key, {_Item, _Timestamp, OldTimer}}] -> cancel_timer(Key, OldTimer);
+handle_cast({put, Domain, DNSRecord}, State) ->
+    case ets:lookup(State, Domain) of
+    [{Domain, {_DNSRecord, _Timestamp, OldTimer}}] -> cancel_timer(Domain, OldTimer);
     _ -> ok
     end,
-    true = ets:insert(State, {Key, {Item, os:timestamp(), set_timer(Key, TTL)}}),
+    NewTimer = set_timer(Domain, min_ttl(DNSRecord#dns_rec.anlist)),
+    true = ets:insert(State, {Domain, {DNSRecord, os:timestamp(), NewTimer}}),
     {noreply, State}.
 
 
@@ -74,14 +112,31 @@ code_change(_OldVsn, State, _Extra) ->
     {ok, State}.
 
 
-set_timer(Key, Interval) ->
-    erlang:send_after(Interval * 1000, self(), {expired, Key}).
+%% internal API
+
+is_cacheable_response(Question, Answers) ->
+    lists:all(fun(Answer) ->
+        Question#dns_query.domain =:= Answer#dns_rr.domain
+            andalso Question#dns_query.type =:= Answer#dns_rr.type
+            andalso Answer#dns_rr.class =:= in
+    end, Answers).
 
 
-cancel_timer(Key, Timer) ->
+min_ttl(Answers) ->
+    MinTTLAnswer = hd(lists:sort(fun(A1, A2) ->
+        A1#dns_rr.ttl =< A2#dns_rr.ttl
+    end, Answers)),
+    MinTTLAnswer#dns_rr.ttl.
+
+
+set_timer(Domain, Interval) ->
+    erlang:send_after(Interval * 1000, self(), {expired, Domain}).
+
+
+cancel_timer(Domain, Timer) ->
     case erlang:cancel_timer(Timer) of
     false ->
-        receive {expired, Key} -> ok after 0 -> ok end;
+        receive {expired, Domain} -> ok after 0 -> ok end;
     _TimeLeft ->
         ok
     end.
