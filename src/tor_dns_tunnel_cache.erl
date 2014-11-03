@@ -17,8 +17,8 @@
 get(Cache, Packet) ->
     {ok, #dns_rec{qdlist = Questions} = DNSRecord} = inet_dns:decode(Packet),
     case Questions of
-    [#dns_query{type = Type, class = in} = Question] when Type =:= a; Type =:= aaaa ->
-        case gen_server:call(Cache, {get, Question#dns_query.domain}, infinity) of
+    [#dns_query{domain = Domain, type = Type, class = in}] ->
+        case gen_server:call(Cache, {get, {Domain, Type}}, infinity) of
         {ok, CachedDNSRecord, Timestamp} ->
             Answers = CachedDNSRecord#dns_rec.anlist,
             ElapsedTimeInSeconds = timer:now_diff(os:timestamp(), Timestamp) div 1000000,
@@ -49,10 +49,11 @@ get(Cache, Packet) ->
 put(Cache, Packet) ->
     {ok, #dns_rec{qdlist = Questions} = DNSRecord} = inet_dns:decode(Packet),
     case Questions of
-    [#dns_query{type = Type, class = in} = Question] when Type =:= a; Type =:= aaaa ->
-        case is_cacheable_response(Question, DNSRecord#dns_rec.anlist) of
+    [#dns_query{class = in} = Question] ->
+        case is_valid_response(Question, DNSRecord#dns_rec.anlist) of
         true ->
-            gen_server:cast(Cache, {put, Question#dns_query.domain, DNSRecord});
+            #dns_query{domain = Domain, type = Type} = Question,
+            gen_server:cast(Cache, {put, {Domain, Type}, DNSRecord});
         false ->
             ok
         end;
@@ -76,13 +77,13 @@ init([]) ->
     {ok, ets:new(cache_by_items, [set, private])}.
 
 
-handle_cast({put, Domain, DNSRecord}, State) ->
-    case ets:lookup(State, Domain) of
-    [{Domain, {_DNSRecord, _Timestamp, OldTimer}}] -> cancel_timer(Domain, OldTimer);
+handle_cast({put, Key, DNSRecord}, State) ->
+    case ets:lookup(State, Key) of
+    [{Key, {_DNSRecord, _Timestamp, OldTimer}}] -> cancel_timer(Key, OldTimer);
     _ -> ok
     end,
-    NewTimer = set_timer(Domain, min_ttl(DNSRecord#dns_rec.anlist)),
-    ets:insert(State, {Domain, {DNSRecord, os:timestamp(), NewTimer}}),
+    NewTimer = set_timer(Key, min_ttl(DNSRecord#dns_rec.anlist)),
+    ets:insert(State, {Key, {DNSRecord, os:timestamp(), NewTimer}}),
     {noreply, State}.
 
 
@@ -114,11 +115,11 @@ code_change(_OldVsn, State, _Extra) ->
 
 %% internal API
 
-is_cacheable_response(Question, Answers) ->
+is_valid_response(Question, Answers) ->
     lists:all(fun(Answer) ->
         Question#dns_query.domain =:= Answer#dns_rr.domain
             andalso Question#dns_query.type =:= Answer#dns_rr.type
-            andalso Answer#dns_rr.class =:= in
+            andalso Question#dns_query.class =:= Answer#dns_rr.class
     end, Answers).
 
 
