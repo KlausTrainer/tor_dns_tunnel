@@ -9,6 +9,7 @@
 /deps
 /log
 /logs
+/rel/tor_dns_tunnel
 *.beam
 *.plt
 erl_crash.dump

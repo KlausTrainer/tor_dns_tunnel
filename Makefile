@@ -1,19 +1,19 @@
 PROJECT = tor_dns_tunnel
 
+RELX:=$(shell which relx || echo ./relx)
+
 # options
-
-# CT_SUITES =
-# PLT_APPS = crypto asn1 public_key ssl sasl
-
-# dependencies
-
-# DEPS = ranch
-# dep_ranch = https://github.com/extend/ranch.git 0.10.0
-
-# TEST_DEPS =
 
 # standard targets
 
 include erlang.mk
+
+release: clean-release deps all
+	$(RELX) -o rel/$(PROJECT) -c rel/reltool.config
+
+clean-release:
+	rm -rf rel/$(PROJECT)
+
+clean: clean-release
 
 check test: tests
