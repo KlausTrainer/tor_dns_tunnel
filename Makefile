@@ -9,7 +9,7 @@ RELX:=$(shell which relx || echo ./relx)
 include erlang.mk
 
 release: clean-release deps all
-	$(RELX) -o rel/$(PROJECT) -c rel/reltool.config
+	$(RELX) -o rel -c rel/reltool.config
 
 clean-release:
 	rm -rf rel/$(PROJECT)
