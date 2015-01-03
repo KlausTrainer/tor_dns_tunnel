@@ -1,0 +1,58 @@
+#!/bin/sh
+
+### This is supposed to install an Erlang/OTP release into a given
+### directory on a Linux system where the Upstart init system is
+### available.  The assumption is that the release is self-contained,
+### i.e., it contains an Erlang runtime system and everything else that
+### is required for running the contained applications.
+###
+### Note that it needs to be executed as superuser in order to work
+### properly.
+
+
+NAME=$1
+INSTALLATION_PREFIX="$2"
+
+INSTALL_DIR=$INSTALLATION_PREFIX/$NAME
+
+
+if [ ! $# -eq 2 ]; then
+    echo "Usage: $(basename $0) APPLICATION_NAME INSTALLATION_PREFIX"
+    exit 1
+fi
+
+
+stop $NAME > /dev/null 2>&1
+
+passwd -S $NAME > /dev/null 2>&1
+if [ ! $? -eq 0 ]; then
+    useradd --system --user-group --home $INSTALL_DIR --shell /bin/false $NAME
+fi
+
+mkdir -p $INSTALL_DIR
+cp -a rel/$NAME/* $INSTALL_DIR
+chown -R $NAME:$NAME $INSTALL_DIR
+
+setcap cap_net_bind_service=+ep $INSTALL_DIR/erts-6.2/bin/beam
+setcap cap_net_bind_service=+ep $INSTALL_DIR/erts-6.2/bin/beam.smp
+
+cat <<EOF > /etc/init/${NAME}.conf
+description "$NAME"
+
+start on (local-filesystems and static-network-up)
+stop on deconfiguring-networking
+
+setuid $NAME
+setgid $NAME
+
+env HOME=$INSTALL_DIR
+export HOME
+
+env PIPE_DIR=tmp/
+export PIPE_DIR
+
+pre-start exec $INSTALL_DIR/bin/$NAME start
+post-stop exec $INSTALL_DIR/bin/$NAME stop
+EOF
+
+start $NAME

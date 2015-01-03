@@ -14,6 +14,9 @@ release: clean-release deps all
 clean-release:
 	rm -rf rel/$(PROJECT)
 
+install: release
+	sudo ./install $(PROJECT) /usr/local/lib
+
 clean: clean-release
 
 check test: tests
