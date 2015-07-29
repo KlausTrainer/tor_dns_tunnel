@@ -17,12 +17,12 @@
 -record(state, {
     listen_socket,
     dns_server_socket,
-    outstanding_requests = dict:new(),
+    pending_requests = dict:new(),
     retry_timeout = ?MIN_RETRY_TIMEOUT,
     cache
 }).
 
--record(outstanding_request, {
+-record(pending_request, {
     address,
     port,
     timestamp
@@ -80,15 +80,15 @@ handle_info({udp, ListenSocket, RemoteAddress, RemotePort, Packet} = Request,
 
 handle_info({tcp, DNSServerSocket, <<Id:16, _/binary>> = Packet},
             #state{dns_server_socket = DNSServerSocket} = State) when byte_size(Packet) > 2 ->
-    OutstandingRequests = State#state.outstanding_requests,
-    case dict:find(Id, OutstandingRequests) of
+    PendingRequests = State#state.pending_requests,
+    case dict:find(Id, PendingRequests) of
     error ->
         ok;
-    {ok, #outstanding_request{address = RemoteAddress, port = RemotePort}} ->
+    {ok, #pending_request{address = RemoteAddress, port = RemotePort}} ->
         tor_dns_tunnel_cache:put(State#state.cache, Packet),
         ok = gen_udp:send(State#state.listen_socket, RemoteAddress, RemotePort, Packet)
     end,
-    {noreply, State#state{outstanding_requests = dict:erase(Id, OutstandingRequests)}};
+    {noreply, State#state{pending_requests = dict:erase(Id, PendingRequests)}};
 
 handle_info({tcp_closed, DNSServerSocket}, State) ->
     gen_tcp:close(DNSServerSocket),
@@ -138,37 +138,37 @@ try_dns_server_connect(#state{retry_timeout = RetryTimeout} = State) ->
 
 send_dns_request({udp, _ListenSocket, RemoteAddress, RemotePort, <<Id:16, _/binary>> = Packet} = Request, State) ->
     DNSServerSocket = State#state.dns_server_socket,
-    OutstandingRequests = State#state.outstanding_requests,
-    NewOutstandingRequests = case is_port(DNSServerSocket) of
+    PendingRequests = State#state.pending_requests,
+    NewPendingRequests = case is_port(DNSServerSocket) of
     true ->
         ok = gen_tcp:send(DNSServerSocket, Packet),
-        OutstandingRequest = #outstanding_request{
+        PendingRequest = #pending_request{
             address = RemoteAddress,
             port = RemotePort,
             timestamp = os:timestamp()
         },
-        dict:store(Id, OutstandingRequest, OutstandingRequests);
+        dict:store(Id, PendingRequest, PendingRequests);
     false ->
-        case dict:find(Id, OutstandingRequests) of
+        case dict:find(Id, PendingRequests) of
         error ->
             erlang:send_after(?MIN_RETRY_TIMEOUT, self(), Request), % retry later
-            OutstandingRequest = #outstanding_request{
+            PendingRequest = #pending_request{
                 address = RemoteAddress,
                 port = RemotePort,
                 timestamp = os:timestamp()
             },
-            dict:store(Id, OutstandingRequest, OutstandingRequests);
-        {ok, #outstanding_request{address = RemoteAddress, port = RemotePort, timestamp = Timestamp}} ->
+            dict:store(Id, PendingRequest, PendingRequests);
+        {ok, #pending_request{address = RemoteAddress, port = RemotePort, timestamp = Timestamp}} ->
             case timer:now_diff(os:timestamp(), Timestamp) div 1000 > ?MAX_RETRY_TIMEOUT of
             false ->
                 erlang:send_after(?MIN_RETRY_TIMEOUT, self(), Request),
-                OutstandingRequests;
+                PendingRequests;
             true ->
-                dict:erase(Id, OutstandingRequests)
+                dict:erase(Id, PendingRequests)
             end
         end
     end,
-    State#state{outstanding_requests = NewOutstandingRequests}.
+    State#state{pending_requests = NewPendingRequests}.
 
 
 dns_server() ->
